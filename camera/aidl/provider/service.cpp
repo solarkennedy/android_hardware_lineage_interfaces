@@ -39,6 +39,15 @@ int main() {
     std::shared_ptr<CameraProvider> defaultProvider = ndk::SharedRefBase::make<CameraProvider>();
     const std::string serviceName = std::string(CameraProvider::descriptor) + "/internal/0";
 
+    // If the camera HAL module failed to load (e.g. a dependency isn't up yet in
+    // early boot), exit before registering: a registered provider with no module
+    // crashes on the first inbound call. Exiting lets init restart us until the
+    // module loads.
+    if (defaultProvider->isInitFailed()) {
+        ALOGE("CameraProvider: camera HAL module init failed, exiting for init to retry.");
+        return EXIT_FAILURE;
+    }
+
     binder_exception_t ret =
             AServiceManager_addService(defaultProvider->asBinder().get(), serviceName.c_str());
     LOG_ALWAYS_FATAL_IF(ret != EX_NONE, "Error while registering camera provider service: %d", ret);
