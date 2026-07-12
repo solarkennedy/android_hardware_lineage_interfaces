@@ -8,6 +8,7 @@
 
 #include <android-base/logging.h>
 #include <hidl/HidlTransportSupport.h>
+#include <unistd.h>
 
 #include "RadioConfig.h"
 #include "hidl-utils.h"
@@ -24,6 +25,12 @@ using android::sp;
 using android::status_t;
 
 int main() {
+    // The HIDL RIL underneath us restarts at least once per boot on this
+    // platform; any resulting LOG(FATAL)/unchecked-Return abort would tombstone
+    // a routine event. The fatal message is already in the log when the aborter
+    // runs; exit cleanly and let init restart us.
+    android::base::SetAborter([](const char* /* msg */) { _exit(1); });
+
     sp<lineage::hardware::radio::config::V1_0::IRadioConfig> realRadioConfig =
             lineage::hardware::radio::config::V1_0::IRadioConfig::getService();
     CHECK(realRadioConfig) << "Cannot get backend radio config V1.0 service.";

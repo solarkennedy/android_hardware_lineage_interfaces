@@ -19,11 +19,17 @@
 #include <android-base/logging.h>
 #include <android/hidl/manager/1.2/IServiceManager.h>
 
+#include <unistd.h>
+
 namespace android::hardware::hidl_utils {
 
 class HalDeathRecipient : public hidl_death_recipient {
     void serviceDied(uint64_t /* cookie */, const wp<hidl::base::V1_0::IBase>& /* who */) override {
-        LOG(FATAL) << "One of the linked HALs died. Restarting...";
+        // Exit instead of LOG(FATAL): the underlying HIDL RIL restarts at least
+        // once per boot on this platform, and abort() turns that routine event
+        // into a tombstone. init restarts us and the links are re-established.
+        LOG(ERROR) << "One of the linked HALs died. Exiting so init restarts us...";
+        _exit(1);
     }
 };
 
