@@ -10,6 +10,7 @@
 #include "convert.h"
 
 #include <cutils/trace.h>
+#include <dlfcn.h>
 
 namespace android {
 namespace hardware {
@@ -351,12 +352,87 @@ ndk::ScopedAStatus CameraDevice::setTorchMode(bool on) {
     return fromStatus(status);
 }
 
-ndk::ScopedAStatus CameraDevice::turnOnTorchWithStrengthLevel(int32_t) {
-    return fromStatus(Status::OPERATION_NOT_SUPPORTED);
+/*
+ * Torch strength over a legacy HAL.
+ *
+ * camera_module_t has only set_torch_mode(id, bool) -- there is no strength
+ * entry point in the legacy ABI -- so a HAL that can drive its torch LED at
+ * several currents has no standard way to say so. Rather than give up, look for
+ * an optional vendor extension exported by the HAL .so itself: CameraModule
+ * hands us the dlopen handle via getDso(), so a HAL that wants to support the
+ * flashlight slider just exports these two symbols.
+ *
+ * A HAL that does not export them is indistinguishable from before this change:
+ * dlsym() returns null and we answer OPERATION_NOT_SUPPORTED exactly as the
+ * previous stubs did. Nothing here is device-specific.
+ *
+ * Note the HAL must also publish ANDROID_FLASH_INFO_STRENGTH_MAXIMUM_LEVEL > 1
+ * in its static characteristics, or the framework will never call these.
+ */
+namespace {
+constexpr const char* kTorchSetStrengthSymbol = "qcamera_torch_set_strength";
+constexpr const char* kTorchGetStrengthSymbol = "qcamera_torch_get_strength";
+
+using TorchSetStrengthFn = int (*)(const char*, int);
+using TorchGetStrengthFn = int (*)(const char*, int*);
+}  // namespace
+
+ndk::ScopedAStatus CameraDevice::turnOnTorchWithStrengthLevel(int32_t torchStrength) {
+    if (!mModule->isSetTorchModeSupported()) {
+        return fromStatus(Status::OPERATION_NOT_SUPPORTED);
+    }
+
+    void* dso = mModule->getDso();
+    if (dso == nullptr) {
+        return fromStatus(Status::OPERATION_NOT_SUPPORTED);
+    }
+
+    auto setStrength = reinterpret_cast<TorchSetStrengthFn>(
+            dlsym(dso, kTorchSetStrengthSymbol));
+    if (setStrength == nullptr) {
+        return fromStatus(Status::OPERATION_NOT_SUPPORTED);
+    }
+
+    Status status = initStatus();
+    if (status == Status::OK) {
+        status = getAidlStatus(setStrength(mCameraId.c_str(), torchStrength));
+    }
+    return fromStatus(status);
 }
 
-ndk::ScopedAStatus CameraDevice::getTorchStrengthLevel(int32_t*) {
-    return fromStatus(Status::OPERATION_NOT_SUPPORTED);
+ndk::ScopedAStatus CameraDevice::getTorchStrengthLevel(int32_t* _aidl_return) {
+    if (_aidl_return == nullptr) {
+        return fromStatus(Status::ILLEGAL_ARGUMENT);
+    }
+
+    if (!mModule->isSetTorchModeSupported()) {
+        return fromStatus(Status::OPERATION_NOT_SUPPORTED);
+    }
+
+    void* dso = mModule->getDso();
+    if (dso == nullptr) {
+        return fromStatus(Status::OPERATION_NOT_SUPPORTED);
+    }
+
+    auto getStrength = reinterpret_cast<TorchGetStrengthFn>(
+            dlsym(dso, kTorchGetStrengthSymbol));
+    if (getStrength == nullptr) {
+        return fromStatus(Status::OPERATION_NOT_SUPPORTED);
+    }
+
+    Status status = initStatus();
+    if (status != Status::OK) {
+        return fromStatus(status);
+    }
+
+    int level = 0;
+    status = getAidlStatus(getStrength(mCameraId.c_str(), &level));
+    if (status != Status::OK) {
+        return fromStatus(status);
+    }
+
+    *_aidl_return = level;
+    return fromStatus(Status::OK);
 }
 
 std::shared_ptr<CameraDeviceSession> CameraDevice::createSession(
